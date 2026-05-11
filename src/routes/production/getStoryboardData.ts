@@ -65,6 +65,17 @@ export default router.post(
         );
         return {
           id: String(item.id),
+          shotType: item.shotType ?? undefined,
+          cameraAngle: item.cameraAngle ?? undefined,
+          cameraMovement: item.cameraMovement ?? undefined,
+          composition: item.composition ?? undefined,
+          actorBlocking: item.actorBlocking ?? undefined,
+          emotionBeat: item.emotionBeat ?? undefined,
+          directorNote: item.directorNote ?? undefined,
+          panoramaSceneId: item.panoramaSceneId ?? undefined,
+          panoramaHotspotId: item.panoramaHotspotId ?? undefined,
+          panoramaView: item.panoramaView ?? undefined,
+          lensPreset: item.lensPreset ?? undefined,
           createTime: item.createTime ?? undefined,
           duration: item.duration ? Number(item.duration) : undefined,
           filePath: item.filePath || undefined,

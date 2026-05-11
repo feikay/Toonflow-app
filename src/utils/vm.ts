@@ -33,11 +33,16 @@ export default function runCode(code: string, vendor?: Record<string, any>) {
     mergeImages,
     pollTask,
     fetch: fetch,
+    Buffer,
     exports,
     axios,
     FormData,
     logger,
     jsonwebtoken,
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
   };
   if (vendor !== undefined) {
     sandbox.vendor = vendor;

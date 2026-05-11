@@ -1,12 +1,13 @@
 import express from "express";
 import u from "@/utils";
 import { z } from "zod";
-import sharp from "sharp";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
-import { Output, tool } from "ai";
 import { assetItemSchema } from "@/agents/productionAgent/tools";
+import { buildStoryboardDirectorPrompt, mergeStoryboardReferenceImageIds } from "@/lib/storyboardDirectorPrompt";
+
 const router = express.Router();
+
 export type AssetData = z.infer<typeof assetItemSchema>;
 
 export default router.post(
@@ -29,44 +30,50 @@ export default router.post(
       scriptId: number;
       concurrentCount: number;
     } = req.body;
-    if (!storyboardIds || storyboardIds.length === 0) return res.status(400).send(error("storyboardIds不能为空"));
-    // 当没有 storyboardIds 时，通过 AI 生成新的分镜面板数据
-    let finalStoryboardIds: number[] = storyboardIds || [];
-    // shouldGenerateImage === 0 的分镜标记为「未生成」，其余标记为「生成中」
+
+    if (!storyboardIds.length) {
+      return res.status(400).send(error("storyboardIds不能为空"));
+    }
+
     await u
       .db("o_storyboard")
-      .whereIn("id", finalStoryboardIds)
+      .whereIn("id", storyboardIds)
       .where("scriptId", scriptId)
       .where("shouldGenerateImage", 0)
       .update({ state: "未生成" });
+
     await u
       .db("o_storyboard")
-      .whereIn("id", finalStoryboardIds)
+      .whereIn("id", storyboardIds)
       .where("scriptId", scriptId)
       .where("shouldGenerateImage", 1)
       .update({ state: "生成中" });
 
     const projectSettingData = await u.db("o_project").where("id", projectId).select("imageModel", "imageQuality", "artStyle", "videoRatio").first();
+    const storyboardData = await u.db("o_storyboard").where("scriptId", scriptId).whereIn("id", storyboardIds);
 
-    const storyboardData = await u.db("o_storyboard").where("scriptId", scriptId).whereIn("id", finalStoryboardIds);
-    // 按 rowid 顺序查出每个 storyboard 关联的 assetId 有序列表
+    const panoramaSceneIds = [...new Set(storyboardData.map((item) => item.panoramaSceneId).filter((id): id is number => typeof id === "number"))];
+    const panoramaHotspotIds = [...new Set(storyboardData.map((item) => item.panoramaHotspotId).filter((id): id is number => typeof id === "number"))];
+    const panoramaScenes = panoramaSceneIds.length ? await u.db("o_panoramaScene").whereIn("id", panoramaSceneIds) : [];
+    const panoramaHotspots = panoramaHotspotIds.length ? await u.db("o_panoramaHotspot").whereIn("id", panoramaHotspotIds) : [];
+    const panoramaSceneMap = Object.fromEntries(panoramaScenes.map((item) => [item.id, item]));
+    const panoramaHotspotMap = Object.fromEntries(panoramaHotspots.map((item) => [item.id, item]));
+
     const assets2StoryboardRows = await u
       .db("o_assets2Storyboard")
-      .whereIn("storyboardId", finalStoryboardIds)
+      .whereIn("storyboardId", storyboardIds)
       .orderBy("rowid")
       .select("storyboardId", "assetId");
 
-    // 收集所有 assetId，批量查对应的 imageId
-    const allAssetIds = [...new Set(assets2StoryboardRows.map((r: any) => r.assetId))];
+    const allAssetIds = [...new Set(assets2StoryboardRows.map((row: any) => row.assetId))];
     const assetImageMap: Record<number, number> = {};
-    if (allAssetIds.length > 0) {
+    if (allAssetIds.length) {
       const assetRows = await u.db("o_assets").whereIn("id", allAssetIds).select("id", "imageId");
       assetRows.forEach((row: any) => {
-        assetImageMap[row.id] = row.imageId;
+        if (row.imageId != null) assetImageMap[row.id] = row.imageId;
       });
     }
 
-    // 按 rowid 顺序重建 assetRecord，值为有序的 imageId 列表
     const assetRecord: Record<number, number[]> = {};
     assets2StoryboardRows.forEach((item: any) => {
       if (!assetRecord[item.storyboardId]) {
@@ -80,20 +87,25 @@ export default router.post(
 
     res.status(200).send(
       success(
-        storyboardData.map((i) => ({
-          id: i.id,
-          prompt: i.prompt,
-          associateAssetsIds: assetRecord[i.id!],
+        storyboardData.map((item) => ({
+          id: item.id,
+          prompt: item.prompt,
+          associateAssetsIds: assetRecord[item.id!] ?? [],
           src: null,
-          state: i.state,
-          videoDesc: i.videoDesc,
-          shouldGenerateImage: i.shouldGenerateImage,
+          state: item.state,
+          videoDesc: item.videoDesc,
+          shouldGenerateImage: item.shouldGenerateImage,
         })),
       ),
     );
+
     const generateTask = async (item: (typeof storyboardData)[number]) => {
-      const repeloadObj = {
-        prompt: item.prompt!,
+      const panoramaScene = item.panoramaSceneId ? panoramaSceneMap[item.panoramaSceneId] : null;
+      const panoramaHotspot = item.panoramaHotspotId ? panoramaHotspotMap[item.panoramaHotspotId] : null;
+      const finalPrompt = buildStoryboardDirectorPrompt(item, panoramaScene, panoramaHotspot);
+      const referenceImageIds = mergeStoryboardReferenceImageIds(assetRecord[item.id!] ?? [], panoramaScene);
+      const payload = {
+        prompt: finalPrompt,
         size: projectSettingData?.imageQuality as "1K" | "2K" | "4K",
         aspectRatio: projectSettingData?.videoRatio as `${number}:${number}`,
       };
@@ -101,14 +113,29 @@ export default router.post(
       await u.Ai.Image(projectSettingData?.imageModel as `${string}:${string}`)
         .run(
           {
-            referenceList: await getAssetsImageBase64(assetRecord[item.id!] || []),
-            ...repeloadObj,
+            referenceList: await getAssetsImageBase64(referenceImageIds),
+            ...payload,
           },
           {
             taskClass: "生成分镜图片",
             describe: "分镜图片生成",
-            relatedObjects: JSON.stringify(repeloadObj),
-            projectId: projectId,
+            relatedObjects: JSON.stringify({
+              ...payload,
+              directorFields: {
+                shotType: item.shotType ?? null,
+                cameraAngle: item.cameraAngle ?? null,
+                cameraMovement: item.cameraMovement ?? null,
+                composition: item.composition ?? null,
+                actorBlocking: item.actorBlocking ?? null,
+                emotionBeat: item.emotionBeat ?? null,
+                directorNote: item.directorNote ?? null,
+                panoramaSceneId: item.panoramaSceneId ?? null,
+                panoramaHotspotId: item.panoramaHotspotId ?? null,
+                panoramaView: item.panoramaView ?? null,
+                lensPreset: item.lensPreset ?? null,
+              },
+            }),
+            projectId,
           },
         )
         .then(async (imageCls) => {
@@ -120,18 +147,14 @@ export default router.post(
           });
         })
         .catch(async (e) => {
-          await u
-            .db("o_storyboard")
-            .where("id", item.id)
-            .update({
-              filePath: "",
-              reason: u.error(e).message,
-              state: "生成失败",
-            });
+          await u.db("o_storyboard").where("id", item.id).update({
+            filePath: "",
+            reason: u.error(e).message,
+            state: "生成失败",
+          });
         });
     };
 
-    // 按 concurrentCount 控制并发数，分批执行；跳过 shouldGenerateImage === 0 的分镜
     const generateList = storyboardData.filter((item) => item.shouldGenerateImage !== 0);
     for (let i = 0; i < generateList.length; i += concurrentCount) {
       const batch = generateList.slice(i, i + concurrentCount);
@@ -139,31 +162,27 @@ export default router.post(
     }
   },
 );
+
 async function getAssetsImageBase64(imageIds: number[]) {
   if (!imageIds.length) return [];
 
-  const imagePaths = await u.db("o_image").whereIn("o_image.id", imageIds).select("o_image.id", "o_image.filePath");
-
-  // 建立 id 到 filePath 的映射
+  const imageRows = await u.db("o_image").whereIn("o_image.id", imageIds).select("o_image.id", "o_image.filePath");
   const id2Path = new Map<number, string>();
-  for (const row of imagePaths) {
-    id2Path.set(row.id, row.filePath);
+  for (const row of imageRows) {
+    if (row.filePath) id2Path.set(row.id, row.filePath);
   }
 
-  // 保证输出顺序与 imageIds 一致
   const imageUrls = await Promise.all(
     imageIds.map(async (id) => {
       const filePath = id2Path.get(id);
-      if (filePath) {
-        try {
-          return await u.oss.getImageBase64(filePath);
-        } catch {
-          return null;
-        }
+      if (!filePath) return null;
+      try {
+        return await u.oss.getImageBase64(filePath);
+      } catch {
+        return null;
       }
-      return null;
     }),
   );
-  // 保留顺序，并且过滤掉无效项
-  return (imageUrls.filter(Boolean) as string[]).map((url) => ({ type: "image" as const, base64: url }));
+
+  return (imageUrls.filter(Boolean) as string[]).map((base64) => ({ type: "image" as const, base64 }));
 }

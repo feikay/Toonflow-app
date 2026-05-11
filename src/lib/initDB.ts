@@ -476,6 +476,45 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
     },
     //分镜
     {
+      name: "o_panoramaScene",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.integer("projectId");
+        table.integer("scriptId");
+        table.text("name");
+        table.text("prompt");
+        table.text("aspectType");
+        table.text("filePath");
+        table.integer("imageId");
+        table.integer("width");
+        table.integer("height");
+        table.text("meta");
+        table.integer("createTime");
+        table.integer("updateTime");
+        table.primary(["id"]);
+        table.unique(["id"]);
+      },
+    },
+    {
+      name: "o_panoramaHotspot",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.integer("panoramaSceneId");
+        table.text("type");
+        table.text("label");
+        table.float("x");
+        table.float("y");
+        table.float("yaw");
+        table.float("pitch");
+        table.float("fov");
+        table.text("meta");
+        table.integer("createTime");
+        table.integer("updateTime");
+        table.primary(["id"]);
+        table.unique(["id"]);
+      },
+    },
+    {
       name: "o_storyboard",
       builder: (table) => {
         table.integer("id").notNullable();
@@ -492,6 +531,17 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.integer("projectId");
         table.integer("flowId"); //工作流id
         table.integer("index");
+        table.text("shotType");
+        table.text("cameraAngle");
+        table.text("cameraMovement");
+        table.text("composition");
+        table.text("actorBlocking");
+        table.text("emotionBeat");
+        table.text("directorNote");
+        table.integer("panoramaSceneId");
+        table.integer("panoramaHotspotId");
+        table.text("panoramaView");
+        table.text("lensPreset");
         table.integer("createTime");
         table.primary(["id"]);
         table.unique(["id"]);
@@ -578,6 +628,12 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
           },
           {
             id: "openai",
+            inputValues: "{}",
+            models: "[]",
+            enable: 0,
+          },
+          {
+            id: "newapi_channel_conn",
             inputValues: "{}",
             models: "[]",
             enable: 0,

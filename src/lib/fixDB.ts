@@ -16,6 +16,12 @@ export default async (knex: Knex): Promise<void> => {
     }
   };
 
+  const ensureTable = async (table: string, builder: (table: Knex.CreateTableBuilder) => void) => {
+    if (!(await knex.schema.hasTable(table))) {
+      await knex.schema.createTable(table, builder);
+    }
+  };
+
   const dropColumn = async (table: string, column: string) => {
     if (!(await knex.schema.hasTable(table))) return;
     if (await knex.schema.hasColumn(table, column)) {
@@ -65,6 +71,51 @@ export default async (knex: Knex): Promise<void> => {
   await addColumn("o_agentDeploy", "temperature", "integer");
   // 添加新字段
   await addColumn("o_agentDeploy", "maxOutputTokens", "integer");
+  await addColumn("o_storyboard", "shotType", "text");
+  await addColumn("o_storyboard", "cameraAngle", "text");
+  await addColumn("o_storyboard", "cameraMovement", "text");
+  await addColumn("o_storyboard", "composition", "text");
+  await addColumn("o_storyboard", "actorBlocking", "text");
+  await addColumn("o_storyboard", "emotionBeat", "text");
+  await addColumn("o_storyboard", "directorNote", "text");
+  await addColumn("o_storyboard", "panoramaSceneId", "integer");
+  await addColumn("o_storyboard", "panoramaHotspotId", "integer");
+  await addColumn("o_storyboard", "panoramaView", "text");
+  await addColumn("o_storyboard", "lensPreset", "text");
+
+  await ensureTable("o_panoramaScene", (table) => {
+    table.integer("id").notNullable();
+    table.integer("projectId");
+    table.integer("scriptId");
+    table.text("name");
+    table.text("prompt");
+    table.text("aspectType");
+    table.text("filePath");
+    table.integer("imageId");
+    table.integer("width");
+    table.integer("height");
+    table.text("meta");
+    table.integer("createTime");
+    table.integer("updateTime");
+    table.primary(["id"]);
+    table.unique(["id"]);
+  });
+  await ensureTable("o_panoramaHotspot", (table) => {
+    table.integer("id").notNullable();
+    table.integer("panoramaSceneId");
+    table.text("type");
+    table.text("label");
+    table.float("x");
+    table.float("y");
+    table.float("yaw");
+    table.float("pitch");
+    table.float("fov");
+    table.text("meta");
+    table.integer("createTime");
+    table.integer("updateTime");
+    table.primary(["id"]);
+    table.unique(["id"]);
+  });
 
   //添加数据高级配置
   const advancedAgentList = [

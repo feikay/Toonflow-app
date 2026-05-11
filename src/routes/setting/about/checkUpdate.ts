@@ -1,11 +1,12 @@
 import express from "express";
-import { success, error } from "@/lib/responseFormat";
-import { validateFields } from "@/middleware/middleware";
-import { z } from "zod";
-const router = express.Router();
-
 import fs from "fs";
 import path from "path";
+import { z } from "zod";
+import { success, error } from "@/lib/responseFormat";
+import { validateFields } from "@/middleware/middleware";
+import { buildCustomUpdateDisabledPayload, getConfiguredCustomUpdateUrl } from "@/lib/customUpdateSource";
+
+const router = express.Router();
 
 declare const __APP_VERSION__: string | undefined;
 
@@ -13,7 +14,6 @@ const APP_VERSION: string = (() => {
   if (typeof __APP_VERSION__ !== "undefined") {
     return __APP_VERSION__;
   }
-  // 开发环境回退：从 package.json 读取
   const pkgPath = path.resolve(process.cwd(), "package.json");
   const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
   return pkg.version;
@@ -27,15 +27,28 @@ export default router.post(
   }),
   async (req, res) => {
     const { source, url } = req.body;
+    const updateUrl = getConfiguredCustomUpdateUrl(url);
 
-    const getUrl = url ?? "https://toonflow.oss-cn-beijing.aliyuncs.com/update.json";
+    if (!updateUrl) {
+      return res.status(200).send(success(buildCustomUpdateDisabledPayload(APP_VERSION)));
+    }
 
-    const versionInfo = await fetch(getUrl).then((res) => res.json());
-    if (!versionInfo) return res.status(400).send(error("无法获取版本信息"));
-    const { version: tagger, time, data } = versionInfo;
+    let versionInfo: any;
+    try {
+      versionInfo = await fetch(updateUrl).then((response) => response.json());
+    } catch {
+      return res.status(400).send(error("自定义更新源不可用，请检查 TOONFLOW_CUSTOM_UPDATE_URL 配置"));
+    }
 
-    const sourceData = data[source];
-    if (!sourceData) return res.status(400).send(error("无法获取该源的下载信息"));
+    if (!versionInfo) {
+      return res.status(400).send(error("无法获取版本信息"));
+    }
+
+    const { version: latestVersion, time, data } = versionInfo;
+    const sourceData = data?.[source];
+    if (!sourceData) {
+      return res.status(400).send(error("自定义更新源中缺少当前下载源配置"));
+    }
 
     const platformType: Record<string, string> = {
       win32: "windows",
@@ -43,30 +56,72 @@ export default router.post(
       linux: "linux",
     };
 
-    const zipItem = sourceData.find((d: any) => d.type === "zip");
-    const installerItem = sourceData.find((d: any) => d.type === platformType[process.platform]);
+    const zipItem = sourceData.find((item: any) => item.type === "zip");
+    const installerItem = sourceData.find((item: any) => item.type === platformType[process.platform]);
 
-    const taggerList = tagger.split(".").map(Number);
+    const latestVersionList = latestVersion.split(".").map(Number);
     const currentVersionList = APP_VERSION.split(".").map(Number);
-    //对比Major
-    if (taggerList[0] > currentVersionList[0]) {
-      if (!installerItem) return res.status(400).send(error("该源暂无适用于当前系统的安装包"));
-      return res
-        .status(200)
-        .send(success({ needUpdate: true, latestVersion: tagger, reinstall: true, time, url: installerItem.url, version: tagger }));
+
+    if (latestVersionList[0] > currentVersionList[0]) {
+      if (!installerItem) {
+        return res.status(400).send(error("自定义更新源缺少当前系统所需的安装包"));
+      }
+      return res.status(200).send(
+        success({
+          needUpdate: true,
+          latestVersion,
+          reinstall: true,
+          time,
+          url: installerItem.url,
+          version: latestVersion,
+          customSourceConfigured: true,
+        }),
+      );
     }
-    //对比Minor
-    if (taggerList[1] > currentVersionList[1]) {
-      if (!installerItem) return res.status(400).send(error("该源暂无适用于当前系统的安装包"));
-      return res
-        .status(200)
-        .send(success({ needUpdate: true, latestVersion: tagger, reinstall: true, time, url: installerItem.url, version: tagger }));
+
+    if (latestVersionList[1] > currentVersionList[1]) {
+      if (!installerItem) {
+        return res.status(400).send(error("自定义更新源缺少当前系统所需的安装包"));
+      }
+      return res.status(200).send(
+        success({
+          needUpdate: true,
+          latestVersion,
+          reinstall: true,
+          time,
+          url: installerItem.url,
+          version: latestVersion,
+          customSourceConfigured: true,
+        }),
+      );
     }
-    //Patch
-    if (taggerList[2] > currentVersionList[2]) {
-      if (!zipItem) return res.status(400).send(error("该源暂无增量更新包"));
-      return res.status(200).send(success({ needUpdate: true, latestVersion: tagger, reinstall: false, time, url: zipItem.url, version: tagger }));
+
+    if (latestVersionList[2] > currentVersionList[2]) {
+      if (!zipItem) {
+        return res.status(400).send(error("自定义更新源缺少增量更新包"));
+      }
+      return res.status(200).send(
+        success({
+          needUpdate: true,
+          latestVersion,
+          reinstall: false,
+          time,
+          url: zipItem.url,
+          version: latestVersion,
+          customSourceConfigured: true,
+        }),
+      );
     }
-    return res.status(200).send(success({ needUpdate: false, latestVersion: tagger, reinstall: false, time, version: tagger }));
+
+    return res.status(200).send(
+      success({
+        needUpdate: false,
+        latestVersion,
+        reinstall: false,
+        time,
+        version: latestVersion,
+        customSourceConfigured: true,
+      }),
+    );
   },
 );

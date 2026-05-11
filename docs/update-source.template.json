@@ -1,0 +1,19 @@
+{
+  "version": "1.1.5-custom.1",
+  "time": "2026-04-26",
+  "data": {
+    "toonflow": [
+      {
+        "type": "zip",
+        "url": "https://your-domain.example.com/toonflow/releases/1.1.5-custom.1/latest.zip"
+      },
+      {
+        "type": "windows",
+        "url": "https://your-domain.example.com/toonflow/releases/1.1.5-custom.1/ToonFlowSetup.exe"
+      }
+    ],
+    "github": [],
+    "gitee": [],
+    "atomgit": []
+  }
+}

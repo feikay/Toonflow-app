@@ -3,12 +3,14 @@ import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+
 const router = express.Router();
 
 interface VideoItem {
   id: number;
   src: string;
   state: "未生成" | "生成中" | "已完成" | "生成失败";
+  errorReason?: string;
 }
 
 interface TrackMedia {
@@ -16,6 +18,36 @@ interface TrackMedia {
   id?: number;
   fileType: "image" | "video" | "audio";
   videoDesc?: string;
+  prompt?: string;
+  sources?: "assets" | "storyboard";
+  index?: number | null;
+  shotType?: string | null;
+  cameraAngle?: string | null;
+  cameraMovement?: string | null;
+  composition?: string | null;
+  actorBlocking?: string | null;
+  emotionBeat?: string | null;
+  directorNote?: string | null;
+  panoramaSceneId?: number | null;
+  panoramaHotspotId?: number | null;
+  panoramaView?: string | null;
+  lensPreset?: string | null;
+  panoramaScene?: {
+    id: number;
+    name: string;
+    prompt?: string | null;
+    aspectType?: string | null;
+    meta?: string | null;
+  } | null;
+  panoramaHotspot?: {
+    id: number;
+    label?: string | null;
+    type?: string | null;
+    meta?: string | null;
+    yaw?: number | null;
+    pitch?: number | null;
+    fov?: number | null;
+  } | null;
 }
 
 interface TrackItem {
@@ -27,6 +59,13 @@ interface TrackItem {
   selectVideoId?: number;
   medias: TrackMedia[];
   videoList: VideoItem[];
+}
+
+function normalizeVideoState(value?: string | null): VideoItem["state"] {
+  if (value === "已完成" || value === "生成成功") return "已完成";
+  if (value === "生成中") return "生成中";
+  if (value === "生成失败") return "生成失败";
+  return "未生成";
 }
 
 export default router.post(
@@ -42,123 +81,176 @@ export default router.post(
     if (!projectData?.videoModel) {
       return res.status(400).json(success("项目未配置视频模型"));
     }
+
     let videoMode = "";
     try {
-      videoMode = JSON.parse(projectData?.mode ?? "");
-    } catch (e) {
-      videoMode = projectData?.mode ?? "";
+      videoMode = JSON.parse(projectData.mode ?? "");
+    } catch {
+      videoMode = projectData.mode ?? "";
     }
-    const isRef = Array.isArray(videoMode) ? true : false;
+    const isRef = Array.isArray(videoMode);
 
     const storyboardList = await u.db("o_storyboard").where({ scriptId, projectId }).orderBy("index", "asc");
+
+    const panoramaSceneIds = [...new Set(storyboardList.map((item) => item.panoramaSceneId).filter((id): id is number => typeof id === "number"))];
+    const panoramaHotspotIds = [...new Set(storyboardList.map((item) => item.panoramaHotspotId).filter((id): id is number => typeof id === "number"))];
+    const panoramaScenes = panoramaSceneIds.length ? await u.db("o_panoramaScene").whereIn("id", panoramaSceneIds) : [];
+    const panoramaHotspots = panoramaHotspotIds.length ? await u.db("o_panoramaHotspot").whereIn("id", panoramaHotspotIds) : [];
+    const panoramaSceneMap = Object.fromEntries(
+      panoramaScenes.map((item) => [
+        item.id,
+        {
+          id: item.id ?? 0,
+          name: item.name ?? "",
+          prompt: item.prompt ?? null,
+          aspectType: item.aspectType ?? null,
+          meta: item.meta ?? null,
+        },
+      ]),
+    );
+    const panoramaHotspotMap = Object.fromEntries(
+      panoramaHotspots.map((item) => [
+        item.id,
+        {
+          id: item.id ?? 0,
+          label: item.label ?? null,
+          type: item.type ?? null,
+          meta: item.meta ?? null,
+          yaw: item.yaw ?? null,
+          pitch: item.pitch ?? null,
+          fov: item.fov ?? null,
+        },
+      ]),
+    );
+
     await Promise.all(
-      storyboardList.map(async (i) => {
-        i.filePath = i.filePath ? await u.oss.getFileUrl(i.filePath) : "";
+      storyboardList.map(async (item) => {
+        item.filePath = item.filePath ? await u.oss.getFileUrl(item.filePath) : "";
       }),
     );
-    const storyboardTrackRecord: Record<number, any[]> = {};
-    storyboardList.forEach((i) => {
-      if (storyboardTrackRecord[i.trackId!]) {
-        storyboardTrackRecord[i.trackId!].push({
-          src: i.filePath,
-          fileType: "image",
-          sources: "storyboard",
-          ...(i.prompt != null ? { prompt: i.videoDesc } : {}),
-          ...(i.id != null ? { id: i.id } : {}),
-          index: i.index,
-        });
-      } else {
-        storyboardTrackRecord[i.trackId!] = [
-          {
-            src: i.filePath,
-            fileType: "image",
-            sources: "storyboard",
-            ...(i.prompt != null ? { prompt: i.videoDesc } : {}),
-            ...(i.id != null ? { id: i.id } : {}),
-            index: i.index,
-          },
-        ];
+
+    const storyboardTrackRecord: Record<number, TrackMedia[]> = {};
+    storyboardList.forEach((item) => {
+      const media: TrackMedia = {
+        src: item.filePath ?? "",
+        fileType: "image",
+        sources: "storyboard",
+        ...(item.videoDesc != null ? { videoDesc: item.videoDesc } : {}),
+        ...(item.prompt != null ? { prompt: item.prompt } : {}),
+        ...(item.id != null ? { id: item.id } : {}),
+        index: item.index ?? null,
+        shotType: item.shotType ?? null,
+        cameraAngle: item.cameraAngle ?? null,
+        cameraMovement: item.cameraMovement ?? null,
+        composition: item.composition ?? null,
+        actorBlocking: item.actorBlocking ?? null,
+        emotionBeat: item.emotionBeat ?? null,
+        directorNote: item.directorNote ?? null,
+        panoramaSceneId: item.panoramaSceneId ?? null,
+        panoramaHotspotId: item.panoramaHotspotId ?? null,
+        panoramaView: item.panoramaView ?? null,
+        lensPreset: item.lensPreset ?? null,
+        panoramaScene: item.panoramaSceneId ? panoramaSceneMap[item.panoramaSceneId] ?? null : null,
+        panoramaHotspot: item.panoramaHotspotId ? panoramaHotspotMap[item.panoramaHotspotId] ?? null : null,
+      };
+
+      if (!storyboardTrackRecord[item.trackId!]) {
+        storyboardTrackRecord[item.trackId!] = [];
       }
+      storyboardTrackRecord[item.trackId!].push(media);
     });
-    // 按 storyboardId 分组的资产数据，key 为 storyboardId
+
     const otherDataMap: Record<number, any[]> = {};
     if (isRef) {
-      const storyIds = storyboardList.map((s) => s.id);
-      const assetDatas = await u
-        .db("o_assets2Storyboard")
-        .leftJoin("o_assets", "o_assets2Storyboard.assetId", "o_assets.id")
-        .leftJoin("o_image", "o_image.id", "o_assets.imageId")
-        .whereIn("o_assets2Storyboard.storyboardId", storyIds as number[])
-        .select("o_assets.*", "o_image.filePath", "o_assets2Storyboard.storyboardId");
+      const storyIds = storyboardList.map((item) => item.id).filter(Boolean) as number[];
+      const assetDatas = storyIds.length
+        ? await u
+          .db("o_assets2Storyboard")
+          .leftJoin("o_assets", "o_assets2Storyboard.assetId", "o_assets.id")
+          .leftJoin("o_image", "o_image.id", "o_assets.imageId")
+          .whereIn("o_assets2Storyboard.storyboardId", storyIds)
+          .select("o_assets.*", "o_image.filePath", "o_assets2Storyboard.storyboardId")
+        : [];
 
       await Promise.all(
-        assetDatas.map(async (i) => {
-          const item = {
-            id: i.id,
-            name: i.name,
-            describe: i.describe,
-            type: i.type,
+        assetDatas.map(async (item) => {
+          const asset = {
+            id: item.id,
+            name: item.name,
+            describe: item.describe,
+            type: item.type,
             fileType: "image" as const,
-            sources: "assets",
-            src: i.filePath ? await u.oss.getFileUrl(i.filePath) : "",
+            sources: "assets" as const,
+            src: item.filePath ? await u.oss.getFileUrl(item.filePath) : "",
           };
-          const sid = i.storyboardId as number;
+          const sid = item.storyboardId as number;
           if (!otherDataMap[sid]) otherDataMap[sid] = [];
-          otherDataMap[sid].push(item);
+          otherDataMap[sid].push(asset);
         }),
       );
     }
 
     const trackData = await u.db("o_videoTrack").where({ projectId, scriptId });
-    const videoList = await u.db("o_video").whereIn(
-      "videoTrackId",
-      trackData.map((t) => t.id),
-    );
+    const trackIds = trackData.map((item) => item.id).filter(Boolean) as number[];
+    const videoList = trackIds.length ? await u.db("o_video").whereIn("videoTrackId", trackIds) : [];
+
     const trackList: TrackItem[] = [];
-    const trackIdMap = [...new Set<number>(trackData.map((t) => t.id!))];
+    const trackIdMap = [...new Set<number>(trackData.map((item) => item.id!).filter(Boolean))];
     for (const trackId of trackIdMap) {
-      const item = trackData.find((t) => t.id === trackId);
+      const track = trackData.find((item) => item.id === trackId);
       trackList.push({
         id: trackId,
-        duration: item?.duration ?? 0,
-        prompt: item?.prompt || "",
-        state: (item?.state as "未生成" | "生成中" | "已完成" | "生成失败") ?? "未生成",
-        reason: item?.reason ?? "",
-        selectVideoId: Number(item?.videoId)!,
+        duration: track?.duration ?? 0,
+        prompt: track?.prompt || "",
+        state: normalizeVideoState(track?.state),
+        reason: track?.reason ?? "",
+        selectVideoId: Number(track?.videoId)!,
         medias: (() => {
           const storyboardMedias = storyboardTrackRecord[trackId] ?? [];
-          const assetMedias = storyboardMedias.flatMap((s) => otherDataMap[s.id] ?? []);
+          const assetMedias = storyboardMedias.flatMap((item) => (item.id ? otherDataMap[item.id] ?? [] : []));
           const seenAssetIds = new Set<number>();
-          const uniqueAssets = assetMedias.filter((a) => {
-            if (seenAssetIds.has(a.id)) return false;
-            seenAssetIds.add(a.id);
+          const uniqueAssets = assetMedias.filter((item) => {
+            if (seenAssetIds.has(item.id)) return false;
+            seenAssetIds.add(item.id);
             return true;
           });
-          const hasImageAssetData = uniqueAssets.filter((i) => i.src);
-          const notHasImageAssetData = uniqueAssets.filter((i) => !i.src);
+          const hasImageAssetData = uniqueAssets.filter((item) => item.src);
+          const notHasImageAssetData = uniqueAssets.filter((item) => !item.src);
 
           return [...hasImageAssetData, ...storyboardMedias, ...notHasImageAssetData];
         })(),
         videoList: await Promise.all(
           videoList
-            .filter((v) => v.videoTrackId === trackId)
-            .map(async (v) => ({
-              id: v.id!,
-              src: v.filePath ? await u.oss.getFileUrl(v.filePath) : "",
-              state: v.state === "已完成" ? "已完成" : v.state === "生成中" ? "生成中" : v.state === "生成失败" ? "生成失败" : "未生成",
-              errorReason: v?.errorReason ?? "",
+            .filter((item) => item.videoTrackId === trackId)
+            .map(async (item) => ({
+              id: item.id ?? 0,
+              src: item.filePath ? await u.oss.getFileUrl(item.filePath) : "",
+              state: normalizeVideoState(item.state),
+              errorReason: item.errorReason ?? "",
             })),
         ),
       });
     }
-    res.status(200).send(
+
+    return res.status(200).send(
       success({
-        storyboardList: await Promise.all(
-          storyboardList.map(async (s) => ({
-            ...s,
-            src: s.filePath,
-          })),
-        ),
+        storyboardList: storyboardList.map((item) => ({
+          ...item,
+          src: item.filePath,
+          shotType: item.shotType ?? null,
+          cameraAngle: item.cameraAngle ?? null,
+          cameraMovement: item.cameraMovement ?? null,
+          composition: item.composition ?? null,
+          actorBlocking: item.actorBlocking ?? null,
+          emotionBeat: item.emotionBeat ?? null,
+          directorNote: item.directorNote ?? null,
+          panoramaSceneId: item.panoramaSceneId ?? null,
+          panoramaHotspotId: item.panoramaHotspotId ?? null,
+          panoramaView: item.panoramaView ?? null,
+          lensPreset: item.lensPreset ?? null,
+          panoramaScene: item.panoramaSceneId ? panoramaSceneMap[item.panoramaSceneId] ?? null : null,
+          panoramaHotspot: item.panoramaHotspotId ? panoramaHotspotMap[item.panoramaHotspotId] ?? null : null,
+        })),
         trackList,
       }),
     );

@@ -3,8 +3,9 @@ import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
-const router = express.Router();
 import { flowDataSchema } from "@/agents/productionAgent/tools";
+
+const router = express.Router();
 
 export default router.post(
   "/",
@@ -23,24 +24,45 @@ export default router.post(
       projectId: number;
       episodesId: number;
     } = req.body;
+
     const sqlData = await u.db("o_agentWorkData").where("projectId", String(projectId)).andWhere("episodesId", String(episodesId)).first();
-    const filterDatas = data.storyboard.filter((i) => !i.id);
-    if (data.storyboard && data.storyboard.length && !filterDatas.length) {
+    let preservedFreeCanvas: any = undefined;
+    if (sqlData?.data) {
       try {
-        await Promise.all(
-          data.storyboard
-            .filter((i) => i.id)
-            .map(async (i, index) => {
-              await u.db("o_storyboard").where("id", i.id).update({
-                index: index,
-              });
-            }),
-        );
-      } catch (error) {
-        console.error("更新分镜排序失败", error)
+        preservedFreeCanvas = JSON.parse(sqlData.data).freeCanvas;
+      } catch {
+        preservedFreeCanvas = undefined;
       }
     }
+    if (preservedFreeCanvas && !(data as any).freeCanvas) {
+      (data as any).freeCanvas = preservedFreeCanvas;
+    }
+    const pendingNewStoryboards = data.storyboard.filter((item) => !item.id);
 
+    if (data.storyboard.length && !pendingNewStoryboards.length) {
+      try {
+        await Promise.all(
+          data.storyboard.map(async (item, index) => {
+            await u.db("o_storyboard").where("id", item.id).update({
+              index,
+              shotType: item.shotType ?? null,
+              cameraAngle: item.cameraAngle ?? null,
+              cameraMovement: item.cameraMovement ?? null,
+              composition: item.composition ?? null,
+              actorBlocking: item.actorBlocking ?? null,
+              emotionBeat: item.emotionBeat ?? null,
+              directorNote: item.directorNote ?? null,
+              panoramaSceneId: item.panoramaSceneId ?? null,
+              panoramaHotspotId: item.panoramaHotspotId ?? null,
+              panoramaView: item.panoramaView ?? null,
+              lensPreset: item.lensPreset ?? null,
+            });
+          }),
+        );
+      } catch (err) {
+        console.error("更新分镜排序失败", err);
+      }
+    }
 
     if (!sqlData) {
       await u.db("o_agentWorkData").insert({
@@ -59,6 +81,7 @@ export default router.post(
           data: JSON.stringify(data),
         });
     }
+
     return res.status(200).send(success());
   },
 );

@@ -109,6 +109,35 @@ export interface o_novel {
   'projectId'?: number | null;
   'reel'?: string | null;
 }
+export interface o_panoramaHotspot {
+  'createTime'?: number | null;
+  'fov'?: number | null;
+  'id'?: number;
+  'label'?: string | null;
+  'meta'?: string | null;
+  'panoramaSceneId'?: number | null;
+  'pitch'?: number | null;
+  'type'?: string | null;
+  'updateTime'?: number | null;
+  'x'?: number | null;
+  'y'?: number | null;
+  'yaw'?: number | null;
+}
+export interface o_panoramaScene {
+  'aspectType'?: string | null;
+  'createTime'?: number | null;
+  'filePath'?: string | null;
+  'height'?: number | null;
+  'id'?: number;
+  'imageId'?: number | null;
+  'meta'?: string | null;
+  'name'?: string | null;
+  'projectId'?: number | null;
+  'prompt'?: string | null;
+  'scriptId'?: number | null;
+  'updateTime'?: number | null;
+  'width'?: number | null;
+}
 export interface o_outline {
   'data'?: string | null;
   'episode'?: number | null;
@@ -177,16 +206,27 @@ export interface o_skillList {
   'updateTime': number;
 }
 export interface o_storyboard {
+  'actorBlocking'?: string | null;
+  'cameraAngle'?: string | null;
+  'cameraMovement'?: string | null;
+  'composition'?: string | null;
   'createTime'?: number | null;
+  'directorNote'?: string | null;
   'duration'?: string | null;
+  'emotionBeat'?: string | null;
   'filePath'?: string | null;
   'flowId'?: number | null;
   'id'?: number;
   'index'?: number | null;
+  'lensPreset'?: string | null;
+  'panoramaHotspotId'?: number | null;
+  'panoramaSceneId'?: number | null;
+  'panoramaView'?: string | null;
   'projectId'?: number | null;
   'prompt'?: string | null;
   'reason'?: string | null;
   'scriptId'?: number | null;
+  'shotType'?: string | null;
   'shouldGenerateImage'?: number | null;
   'state'?: string | null;
   'track'?: string | null;
@@ -252,6 +292,8 @@ export interface DB {
   "o_imageFlow": o_imageFlow;
   "o_modelPrompt": o_modelPrompt;
   "o_novel": o_novel;
+  "o_panoramaHotspot": o_panoramaHotspot;
+  "o_panoramaScene": o_panoramaScene;
   "o_outline": o_outline;
   "o_outlineNovel": o_outlineNovel;
   "o_project": o_project;

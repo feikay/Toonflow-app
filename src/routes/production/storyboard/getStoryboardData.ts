@@ -34,6 +34,17 @@ export default router.post(
           prompt: i.prompt,
           state: i.state,
           src: i.filePath ? await u.oss.getFileUrl(i.filePath!) : "",
+          shotType: i.shotType ?? null,
+          cameraAngle: i.cameraAngle ?? null,
+          cameraMovement: i.cameraMovement ?? null,
+          composition: i.composition ?? null,
+          actorBlocking: i.actorBlocking ?? null,
+          emotionBeat: i.emotionBeat ?? null,
+          directorNote: i.directorNote ?? null,
+          panoramaSceneId: i.panoramaSceneId ?? null,
+          panoramaHotspotId: i.panoramaHotspotId ?? null,
+          panoramaView: i.panoramaView ?? null,
+          lensPreset: i.lensPreset ?? null,
         };
       }),
     );

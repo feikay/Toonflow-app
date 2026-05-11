@@ -4,9 +4,11 @@ import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+
 const router = express.Router();
 
 type Type = "imageReference" | "startImage" | "endImage" | "videoReference" | "audioReference";
+
 interface UploadItem {
   fileType: "image" | "video" | "audio";
   type: Type;
@@ -15,6 +17,10 @@ interface UploadItem {
   src?: string;
   label?: string;
   prompt?: string;
+}
+
+function uniqueStrings(items: Array<string | null | undefined>) {
+  return [...new Set(items.filter((item): item is string => !!item))];
 }
 
 export default router.post(
@@ -38,42 +44,61 @@ export default router.post(
   }),
   async (req, res) => {
     const { scriptId, projectId, prompt, uploadData, model, duration, resolution, audio, mode, trackId } = req.body;
+
     let modeData = [];
     if (Array.isArray(mode)) {
+      modeData = mode;
     } else if (typeof mode === "string" && mode.startsWith('["') && mode.endsWith('"]')) {
       try {
         modeData = JSON.parse(mode);
-      } catch (e) { }
+      } catch {
+        modeData = [];
+      }
     }
-    //获取生成视频比例
+
     const ratio = await u.db("o_project").select("videoRatio").where("id", projectId).first();
-    const videoPath = `/${projectId}/video/${uuidv4()}.mp4`; //视频保存路径
-    //查询出图片数据
-    const images = await Promise.all(
+    const videoPath = `/${projectId}/video/${uuidv4()}.mp4`;
+
+    const imagePaths = await Promise.all(
       uploadData.map(async (item: UploadItem) => {
         if (item.sources === "storyboard") {
-          const filePath = await u.db("o_storyboard").where("id", item.id).select("filePath").first();
-          return filePath?.filePath;
+          const storyboard = await u
+            .db("o_storyboard")
+            .leftJoin("o_panoramaScene", "o_storyboard.panoramaSceneId", "o_panoramaScene.id")
+            .leftJoin("o_image as panoramaImage", "o_panoramaScene.imageId", "panoramaImage.id")
+            .where("o_storyboard.id", item.id)
+            .select("o_storyboard.filePath as storyboardFilePath", "o_panoramaScene.filePath as panoramaFilePath", "panoramaImage.filePath as panoramaImageFilePath")
+            .first();
+
+          return uniqueStrings([
+            storyboard?.storyboardFilePath,
+            storyboard?.panoramaFilePath,
+            storyboard?.panoramaImageFilePath,
+          ]);
         }
+
         if (item.sources === "assets") {
-          const filePath = await u
+          const asset = await u
             .db("o_assets")
             .where("o_assets.id", item.id)
             .leftJoin("o_image", "o_assets.imageId", "o_image.id")
             .select("o_image.filePath")
             .first();
-          return filePath?.filePath;
+
+          return uniqueStrings([asset?.filePath]);
         }
+
+        return [];
       }),
     );
-    //把images里面的图片转成base64格式
+
+    const flatImagePaths = uniqueStrings(imagePaths.flat());
     const base64 = await Promise.all(
-      images.map(async (item) => {
-        if (!item) return null;
+      flatImagePaths.map(async (item) => {
         return await u.oss.getImageBase64(item);
       }),
     );
-    //新增
+
     const [videoId] = await u.db("o_video").insert({
       filePath: videoPath,
       time: Date.now(),
@@ -82,7 +107,9 @@ export default router.post(
       projectId,
       videoTrackId: trackId,
     });
+
     res.status(200).send(success(videoId));
+
     (async () => {
       try {
         const relatedObjects = {
@@ -90,12 +117,15 @@ export default router.post(
           videoId,
           scriptId,
           type: "视频",
+          referenceImageCount: flatImagePaths.length,
+          referenceSources: uploadData,
         };
+
         const aiVideo = u.Ai.Video(model);
         await aiVideo.run(
           {
             prompt,
-            referenceList: base64.filter((item) => item !== null).map((item) => ({ type: "image" as const, base64: item! })),
+            referenceList: base64.map((item) => ({ type: "image" as const, base64: item })),
             mode: modeData.length > 0 ? modeData : mode,
             duration,
             aspectRatio: (ratio?.videoRatio as "16:9" | "9:16") || "16:9",
@@ -109,16 +139,14 @@ export default router.post(
             relatedObjects: JSON.stringify(relatedObjects),
           },
         );
+
         await aiVideo.save(videoPath);
         await u.db("o_video").where("id", videoId).update({ state: "生成成功" });
       } catch (error: any) {
-        await u
-          .db("o_video")
-          .where("id", videoId)
-          .update({
-            state: "生成失败",
-            errorReason: u.error(error).message,
-          });
+        await u.db("o_video").where("id", videoId).update({
+          state: "生成失败",
+          errorReason: u.error(error).message,
+        });
       }
     })();
   },

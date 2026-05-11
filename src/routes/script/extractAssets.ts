@@ -41,6 +41,51 @@ type GroupResult = {
 } | null;
 
 /** 将 scriptIds 数组按 groupSize 分组 */
+const splitNames = (value: string) =>
+  value
+    .split(/[、,，/]/)
+    .map((item) => item.replace(/[（(].*?[）)]/g, "").trim())
+    .filter(Boolean);
+
+function fallbackExtractAssets(validScripts: { id: number; script: o_script }[]): NewAsset[] {
+  const assetMap = new Map<string, NewAsset>();
+  const addAsset = (name: string, type: NewAsset["type"], desc: string, scriptId: number) => {
+    const cleanName = name.trim();
+    if (!cleanName) return;
+    const key = `${type}:${cleanName}`;
+    const existing = assetMap.get(key);
+    if (existing) {
+      if (!existing.scriptIds.includes(scriptId)) existing.scriptIds.push(scriptId);
+      return;
+    }
+    assetMap.set(key, { name: cleanName, type, desc, scriptIds: [scriptId] });
+  };
+
+  const propKeywords = ["大刀", "长枪", "毛巾", "9号文明遗迹通行证", "S级资源", "雷电锁链", "雷电长矛"];
+
+  for (const { id, script } of validScripts) {
+    const content = script.content ?? "";
+    for (const line of content.split(/\r?\n/)) {
+      const roleMatch = line.match(/^\s*人物[:：]\s*(.+?)\s*$/);
+      if (roleMatch) {
+        for (const name of splitNames(roleMatch[1])) addAsset(name, "role", `${name}，剧本中出现的角色。`, id);
+      }
+
+      const sceneMatch = line.match(/^\s*场景[:：]\s*(.+?)\s*$/);
+      if (sceneMatch) {
+        const sceneText = sceneMatch[1].replace(/^[^/]*\//, "");
+        for (const name of splitNames(sceneText)) addAsset(name, "scene", `${name}，剧本中出现的场景。`, id);
+      }
+    }
+
+    for (const keyword of propKeywords) {
+      if (content.includes(keyword)) addAsset(keyword, "tool", `${keyword}，剧本中出现的道具或特效资产。`, id);
+    }
+  }
+
+  return [...assetMap.values()];
+}
+
 function chunkArray(arr: number[], groupSize: number): number[][][] {
   const chunks: number[][] = [];
   for (let i = 0; i < arr.length; i += 5) {
@@ -230,19 +275,43 @@ export default router.post(
           });
         } catch (e) {
           console.error(`[extractAssets] group=[${validScriptIds.join(",")}] 提取失败:`, e);
-          for (const { id, script } of validScripts) {
-            errors.push({ scriptId: id, error: (script.name || "") + ":" + u.error(e).message });
-            await u
-              .db("o_script")
-              .where("id", id)
-              .update({ extractState: -1, errorReason: u.error(e).message });
+          const fallbackAssets = fallbackExtractAssets(validScripts);
+          if (fallbackAssets.length) {
+            await persistGroupResult({
+              batchScriptIds: validScriptIds,
+              newAssets: fallbackAssets,
+              existingRefs: [],
+            });
+            await u.db("o_script").whereIn("id", validScriptIds).update({
+              errorReason: `AI资产提取失败，已使用本地规则生成基础资产：${u.error(e).message}`,
+            });
+          } else {
+            for (const { id, script } of validScripts) {
+              errors.push({ scriptId: id, error: (script.name || "") + ":" + u.error(e).message });
+              await u
+                .db("o_script")
+                .where("id", id)
+                .update({ extractState: -1, errorReason: u.error(e).message });
+            }
           }
           return;
         }
         if (!collectedNew.length && !collectedExisting.length) {
-          for (const { id } of validScripts) {
-            errors.push({ scriptId: id, error: "AI 未返回任何资产" });
-            await u.db("o_script").where("id", id).update({ extractState: -1, errorReason: "AI 未返回任何资产" });
+          const fallbackAssets = fallbackExtractAssets(validScripts);
+          if (fallbackAssets.length) {
+            await persistGroupResult({
+              batchScriptIds: validScriptIds,
+              newAssets: fallbackAssets,
+              existingRefs: [],
+            });
+            await u.db("o_script").whereIn("id", validScriptIds).update({
+              errorReason: "AI未返回资产，已使用本地规则生成基础资产",
+            });
+          } else {
+            for (const { id } of validScripts) {
+              errors.push({ scriptId: id, error: "AI 未返回任何资产" });
+              await u.db("o_script").where("id", id).update({ extractState: -1, errorReason: "AI 未返回任何资产" });
+            }
           }
           return;
         }

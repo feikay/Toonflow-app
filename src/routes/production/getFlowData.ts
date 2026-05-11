@@ -3,8 +3,57 @@ import u from "@/utils";
 import { z } from "zod";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
-const router = express.Router();
 import { FlowData } from "@/agents/productionAgent/tools";
+
+const router = express.Router();
+
+async function buildPanoramaScenes(projectId: number, episodesId: number) {
+  const panoramaScenes = await u
+    .db("o_panoramaScene")
+    .where({ projectId, scriptId: episodesId })
+    .orderBy("updateTime", "desc")
+    .orderBy("id", "desc");
+
+  const sceneIds = panoramaScenes.map((scene) => scene.id).filter(Boolean) as number[];
+  const panoramaHotspots = sceneIds.length
+    ? await u.db("o_panoramaHotspot").whereIn("panoramaSceneId", sceneIds).orderBy("id", "asc")
+    : [];
+
+  const hotspotMap = panoramaHotspots.reduce<Record<number, any[]>>((acc, hotspot) => {
+    if (!hotspot.panoramaSceneId) return acc;
+    if (!acc[hotspot.panoramaSceneId]) acc[hotspot.panoramaSceneId] = [];
+    acc[hotspot.panoramaSceneId].push(hotspot);
+    return acc;
+  }, {});
+
+  return await Promise.all(
+    panoramaScenes.map(async (scene) => ({
+      id: scene.id ?? 0,
+      projectId: scene.projectId ?? projectId,
+      scriptId: scene.scriptId ?? episodesId,
+      name: scene.name ?? "",
+      prompt: scene.prompt ?? null,
+      aspectType: (scene.aspectType ?? "360") as "360" | "720",
+      src: scene.filePath ? await u.oss.getFileUrl(scene.filePath) : null,
+      imageId: scene.imageId ?? null,
+      width: scene.width ?? null,
+      height: scene.height ?? null,
+      meta: scene.meta ?? null,
+      hotspots: (hotspotMap[scene.id!] ?? []).map((hotspot) => ({
+        id: hotspot.id ?? 0,
+        panoramaSceneId: hotspot.panoramaSceneId ?? scene.id ?? 0,
+        type: hotspot.type ?? null,
+        label: hotspot.label ?? null,
+        x: hotspot.x ?? null,
+        y: hotspot.y ?? null,
+        yaw: hotspot.yaw ?? null,
+        pitch: hotspot.pitch ?? null,
+        fov: hotspot.fov ?? null,
+        meta: hotspot.meta ?? null,
+      })),
+    })),
+  );
+}
 
 export default router.post(
   "/",
@@ -23,7 +72,7 @@ export default router.post(
 
     const scriptData = await u.db("o_script").where("projectId", projectId).where("id", episodesId).first();
     const scriptAssets = await u.db("o_scriptAssets").where("scriptId", episodesId);
-    const assetIds = scriptAssets.map((i) => i.assetId);
+    const assetIds = scriptAssets.map((item) => item.assetId);
     const assetsData = await u
       .db("o_assets")
       .leftJoin("o_image", "o_assets.imageId", "o_image.id")
@@ -33,7 +82,7 @@ export default router.post(
       .andWhere("o_assets.assetsId", null)
       .where("o_assets.projectId", projectId);
 
-    let childAssetsData = await u
+    const childAssetsData = await u
       .db("o_assets")
       .leftJoin("o_image", "o_assets.imageId", "o_image.id")
       .select("o_assets.*", "o_image.filePath", "o_image.state", "o_image.errorReason")
@@ -42,8 +91,10 @@ export default router.post(
       .where("o_assets.assetsId", "in", assetIds)
       .whereNotNull("o_assets.assetsId");
 
+    const panoramaScenes = await buildPanoramaScenes(projectId, episodesId);
+
     if (!sqlData) {
-      const flowData: FlowData = {
+      const flowData = {
         script: scriptData?.content ?? "",
         scriptPlan: "",
         assets: await Promise.all(
@@ -53,7 +104,7 @@ export default router.post(
             type: item.type ?? "",
             prompt: item.prompt ?? "",
             desc: item.describe ?? "",
-            src: item.filePath && (await u.oss.getFileUrl(item.filePath!)),
+            src: item.filePath ? await u.oss.getFileUrl(item.filePath) : null,
             derive: await Promise.all(
               childAssetsData
                 .filter((child) => child.assetsId === item.id)
@@ -64,99 +115,111 @@ export default router.post(
                   type: child.type,
                   prompt: child.prompt,
                   desc: child.describe ?? "",
-                  src: child.filePath && (await u.oss.getFileUrl(child.filePath!)),
-                  state: child.state ?? "未生成", //todo：矫正状态值
+                  src: child.filePath ? await u.oss.getFileUrl(child.filePath) : null,
+                  state: child.state ?? "未生成",
                 })),
             ),
           })),
         ),
         storyboardTable: "",
         storyboard: [],
-        //todo：矫正workbench数据
-        //@ts-ignore
-        workbench: {
-          videoList: [],
-        },
-        // //todo：矫正封面数据
-        // poster: {
-        //   items: [],
-        // },
-      };
+        panoramaScenes,
+      } as FlowData;
+
       return res.status(200).send(success(flowData));
-    } else {
-      try {
-        const storyboardData = await u.db("o_storyboard").where("scriptId", episodesId);
+    }
 
-        await Promise.all(
-          storyboardData.map(async (i) => {
-            if (i.filePath) {
-              try {
-                i.filePath = await u.oss.getFileUrl(i.filePath);
-              } catch {
-                i.filePath = "";
-              }
-            } else {
-              i.filePath = "";
-            }
-          }),
-        );
-        const storyboardIds = storyboardData.map((i) => i.id);
-        const assetsIds = await u.db("o_assets2Storyboard").whereIn("storyboardId", storyboardIds).orderBy("rowid");
+    try {
+      const storyboardData = await u.db("o_storyboard").where("scriptId", episodesId);
 
-        const assets2StoryboardMap: Record<number, number[]> = {};
-        assetsIds.forEach((i) => {
-          if (!assets2StoryboardMap[i.storyboardId!]) {
-            assets2StoryboardMap[i.storyboardId!] = [];
+      await Promise.all(
+        storyboardData.map(async (item) => {
+          if (!item.filePath) {
+            item.filePath = "";
+            return;
           }
-          assets2StoryboardMap[i.storyboardId!].push(i.assetId!);
-        });
-        const flowData = JSON.parse(sqlData!.data ?? "{}");
-        flowData.assets = await Promise.all(
-          assetsData.map(async (item) => ({
-            id: item.id,
-            name: item.name ?? "",
-            type: item.type ?? "",
-            prompt: item.prompt ?? "",
-            desc: item.describe ?? "",
-            src: item.filePath && (await u.oss.getFileUrl(item.filePath!)),
-            flowId: item.flowId,
-            derive: await Promise.all(
-              childAssetsData
-                .filter((child) => child.assetsId === item.id)
-                .map(async (child) => ({
-                  id: child.id,
-                  assetsId: item.id,
-                  name: child.name ?? "",
-                  prompt: child.prompt,
-                  type: child.type,
-                  desc: child.describe ?? "",
-                  src: child.filePath && (await u.oss.getFileUrl(child.filePath!)),
-                  state: child.state ?? "未生成",
-                  errorReason: child?.errorReason ?? "",
-                  flowId: child.flowId,
-                })),
-            ),
-          })),
-        );
-        flowData.storyboard = storyboardData
-          .map((i) => ({
-            id: i.id,
-            index: i.index,
-            duration: i.duration ? +i.duration : 0,
-            prompt: i.prompt,
-            associateAssetsIds: assets2StoryboardMap[i.id!] ?? [],
-            src: i.filePath,
-            state: i.state,
-            videoDesc: i.videoDesc,
-            shouldGenerateImage: i.shouldGenerateImage,
-            reason: i?.reason ?? "",
-            flowId: i.flowId,
-          }))
-          .sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-        res.status(200).send(success(flowData));
-      } catch (err) {
-        res.status(400).send(error());
-      }
+          try {
+            item.filePath = await u.oss.getFileUrl(item.filePath);
+          } catch {
+            item.filePath = "";
+          }
+        }),
+      );
+
+      const storyboardIds = storyboardData.map((item) => item.id);
+      const assetsIds = storyboardIds.length
+        ? await u.db("o_assets2Storyboard").whereIn("storyboardId", storyboardIds).orderBy("rowid")
+        : [];
+
+      const assets2StoryboardMap: Record<number, number[]> = {};
+      assetsIds.forEach((item) => {
+        if (!item.storyboardId) return;
+        if (!assets2StoryboardMap[item.storyboardId]) {
+          assets2StoryboardMap[item.storyboardId] = [];
+        }
+        assets2StoryboardMap[item.storyboardId].push(item.assetId!);
+      });
+
+      const flowData = JSON.parse(sqlData.data ?? "{}") as Partial<FlowData> & Record<string, any>;
+      flowData.assets = await Promise.all(
+        assetsData.map(async (item) => ({
+          id: item.id,
+          name: item.name ?? "",
+          type: item.type ?? "",
+          prompt: item.prompt ?? "",
+          desc: item.describe ?? "",
+          src: item.filePath ? await u.oss.getFileUrl(item.filePath) : null,
+          flowId: item.flowId,
+          derive: await Promise.all(
+            childAssetsData
+              .filter((child) => child.assetsId === item.id)
+              .map(async (child) => ({
+                id: child.id,
+                assetsId: item.id,
+                name: child.name ?? "",
+                prompt: child.prompt,
+                type: child.type,
+                desc: child.describe ?? "",
+                src: child.filePath ? await u.oss.getFileUrl(child.filePath) : null,
+                state: child.state ?? "未生成",
+                errorReason: child?.errorReason ?? "",
+                flowId: child.flowId,
+              })),
+          ),
+        })),
+      );
+
+      flowData.storyboard = storyboardData
+        .map((item) => ({
+          id: item.id ?? 0,
+          index: item.index,
+          duration: item.duration ? +item.duration : 0,
+          prompt: item.prompt ?? "",
+          associateAssetsIds: assets2StoryboardMap[item.id!] ?? [],
+          src: item.filePath ?? null,
+          state: item.state,
+          videoDesc: item.videoDesc,
+          shouldGenerateImage: item.shouldGenerateImage,
+          reason: item.reason ?? "",
+          flowId: item.flowId,
+          shotType: item.shotType ?? null,
+          cameraAngle: item.cameraAngle ?? null,
+          cameraMovement: item.cameraMovement ?? null,
+          composition: item.composition ?? null,
+          actorBlocking: item.actorBlocking ?? null,
+          emotionBeat: item.emotionBeat ?? null,
+          directorNote: item.directorNote ?? null,
+          panoramaSceneId: item.panoramaSceneId ?? null,
+          panoramaHotspotId: item.panoramaHotspotId ?? null,
+          panoramaView: item.panoramaView ?? null,
+          lensPreset: item.lensPreset ?? null,
+        }))
+        .sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+      flowData.panoramaScenes = panoramaScenes;
+
+      return res.status(200).send(success(flowData));
+    } catch (err) {
+      return res.status(400).send(error());
     }
   },
 );

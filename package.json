@@ -22,6 +22,7 @@
     "dev": "nodemon --inspect --exec tsx src/app.ts",
     "dev:gui": "electronmon -r tsx scripts/main.ts",
     "dev:gui-vite": "cross-env VITE_DEV=1 electronmon -r tsx scripts/main.ts",
+    "jimeng:bridge": "node scripts/jimeng-bridge.mjs",
     "start": "cross-env NODE_ENV=prod node data/serve/app.js",
     "lint": "tsc --noEmit",
     "build": "cross-env NODE_ENV=prod tsx scripts/build.ts",
@@ -32,7 +33,10 @@
     "dist:linux": "yarn build && electron-builder --linux",
     "debug:ai": "npx @ai-sdk/devtools",
     "license": "node scripts/license.ts",
-    "vendor2json": "node scripts/vendor2json.ts"
+    "vendor2json": "node scripts/vendor2json.ts",
+    "sync:runtime": "powershell -ExecutionPolicy Bypass -File scripts/sync-runtime.ps1",
+    "release:custom": "npm run build && npm run sync:runtime",
+    "print:update-source": "node -e \"console.log(process.env.TOONFLOW_CUSTOM_UPDATE_URL || 'TOONFLOW_CUSTOM_UPDATE_URL is not configured')\""
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.35",
